@@ -1,5 +1,6 @@
 # zerops.yaml
 # Multi-Service Build and Deploy pipeline for Nginx Static, Node.js API, and Python Worker.
+# Commit this file as 'zerops.yaml' to the root of your unified GitHub repository.
 
 zerops:
   # =========================================================================
@@ -19,7 +20,9 @@ zerops:
         - ./web/dist
     run:
       base: nginx@latest
-      documentRoot: /var/www/web/dist
+      # Folder name used as the root of the publicly accessible web server content.
+      # This is relative to /var/www where deployFiles places the './web/dist' folder.
+      documentRoot: web/dist
       ports:
         - port: 80
           httpSupport: true
