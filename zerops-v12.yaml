@@ -1,0 +1,107 @@
+# zerops.yml
+# Multi-Service Build and Deploy pipeline for Nginx Static, Node.js API, and Python Worker.
+# Commit this file as 'zerops.yml' to the root of your unified GitHub repository.
+
+zerops:
+  # =========================================================================
+  # 1. FRONTEND: Nginx Static Web Server
+  # =========================================================================
+  - setup: web
+    build:
+      base: nodejs@20
+      # Overrides the project-level NODE_ENV=production so that npm install
+      # successfully installs devDependencies (like vite and typescript) for compilation.
+      envVariables:
+        NODE_ENV: development
+      buildCommands:
+        - cd web && npm install
+        - cd web && npm run build
+      deployFiles:
+        - ./web/dist
+    run:
+      base: nginx@latest
+      # Folder name used as the root of the publicly accessible web server content.
+      # This is relative to /var/www where deployFiles places the './web/dist' folder.
+      documentRoot: web/dist
+      ports:
+        - port: 80
+          httpSupport: true
+
+  # =========================================================================
+  # 2. BACKEND: Node.js/TypeScript API
+  # =========================================================================
+  - setup: api
+    build:
+      base: nodejs@20
+      # Overrides the project-level NODE_ENV=production so that npm install
+      # successfully installs devDependencies (like typescript) for tsc compilation.
+      envVariables:
+        NODE_ENV: development
+      buildCommands:
+        - cd api && npm install
+        - cd api && npm run build
+      deployFiles:
+        - ./api/dist
+        - ./api/node_modules
+        - ./api/package.json
+    run:
+      base: nodejs@20
+      ports:
+        - port: 3000
+          httpSupport: true
+      # Start via shell wrapper to support directory switching and path resolution in cgroups execution environment
+      start: /bin/sh -c "cd api && node dist/server.js"
+      healthCheck:
+        httpGet:
+          port: 3000
+          path: /health
+      envVariables:
+        PORT: 3000
+        # Secure dynamic Zerops references mapped over the private VXLAN network
+        DB_HOST: ${db_hostname}
+        DB_USER: ${db_user}
+        DB_PASSWORD: ${db_password}
+        DB_NAME: ${db_dbName}
+        QDRANT_URL: http://${vector_hostname}:6333
+        NATS_URL: nats://${queue_hostname}:4222
+        S3_ENDPOINT: http://${storage_hostname}
+        S3_ACCESS_KEY: ${storage_accessKeyId}
+        S3_SECRET_KEY: ${storage_secretAccessKey}
+        S3_BUCKET: docuspace-files
+
+  # =========================================================================
+  # 3. WORKER: Python NLP & OCR background processor
+  # =========================================================================
+  - setup: worker
+    build:
+      base: python@3.11
+      os: ubuntu      # <-- Sets the build environment to Ubuntu
+      # Copies the requirements file to the runtime prepare phase container
+      addToRunPrepare:
+        - worker/requirements.txt
+      buildCommands:
+        - echo "Preparing worker source code..."
+      deployFiles:
+        - ./worker
+    run:
+      base: python@3.11
+      os: ubuntu
+      # Custom runtime image configuration - install pdftotext, tesseract OCR, pandoc AND Python packages
+      prepareCommands:
+        - sudo apt-get update
+        - sudo apt-get install -y poppler-utils tesseract-ocr pandoc libtesseract-dev
+        # Install Python dependencies directly into the system environment of the custom runtime image
+        - pip install -r worker/requirements.txt
+      start: python worker/main.py
+      envVariables:
+        # Secure dynamic Zerops references mapped over the private VXLAN network
+        DB_HOST: ${db_hostname}
+        DB_USER: ${db_user}
+        DB_PASSWORD: ${db_password}
+        DB_NAME: ${db_dbName}
+        QDRANT_URL: http://${vector_hostname}:6333
+        NATS_URL: nats://${queue_hostname}:4222
+        S3_ENDPOINT: http://${storage_hostname}
+        S3_ACCESS_KEY: ${storage_accessKeyId}
+        S3_SECRET_KEY: ${storage_secretAccessKey}
+        S3_BUCKET: docuspace-files
