@@ -15,7 +15,7 @@ interface Source {
 }
 
 export default function App() {
-  const [docs, setDocuments] = useState<Document[]>([]);
+  const [docs, setDocs] = useState<Document[]>([]);
   const [activeDoc, setActiveDoc] = useState<string | null>(null);
   const [query, setQuery] = useState('');
   const [chatLog, setChatLog] = useState<{ role: 'user' | 'assistant'; text: string; sources?: Source[] }[]>([]);
@@ -36,9 +36,13 @@ export default function App() {
     try {
       const res = await fetch(`${API_BASE}/api/documents`);
       const data = await res.json();
-      setDocuments(data);
+      if (Array.isArray(data)) {
+        setDocs(data);
+      } else {
+        console.error('API did not return an array for documents list:', data);
+      }
     } catch (e) {
-      console.error(e);
+      console.error('Failed to fetch documents:', e);
     }
   };
 
@@ -115,7 +119,7 @@ export default function App() {
             >
               <span className="font-medium">All Knowledge Bases</span>
             </button>
-            {docs.map(doc => (
+            {Array.isArray(docs) && docs.map(doc => (
               <button
                 key={doc.id}
                 onClick={() => doc.status === 'completed' && setActiveDoc(doc.id)}
@@ -162,12 +166,12 @@ export default function App() {
               </p>
             </div>
           ) : (
-            chatLog.map((log, i) => (
+            Array.isArray(chatLog) && chatLog.map((log, i) => (
               <div key={i} className={`flex ${log.role === 'user' ? 'justify-end' : 'justify-start'}`}>
                 <div className={`max-w-3xl rounded-xl p-6 leading-relaxed text-sm ${log.role === 'user' ? 'bg-teal-500/10 border border-teal-500/20 text-teal-300' : 'bg-slate-900 border border-slate-800'}`}>
                   <p className="whitespace-pre-wrap">{log.text}</p>
                   
-                  {log.sources && log.sources.length > 0 && (
+                  {log.sources && Array.isArray(log.sources) && log.sources.length > 0 && (
                     <div className="mt-4 pt-4 border-t border-slate-800">
                       <h3 className="text-xxs font-bold text-slate-400 uppercase tracking-widest mb-2">Sources Extracted</h3>
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
