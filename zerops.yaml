@@ -1,0 +1,51 @@
+zerops:
+  - setup: web
+    build:
+      base: nodejs@20
+      buildCommands:
+        - cd web && npm install
+        - cd web && npm run build
+      deployFiles:
+        - ./web/dist
+    run:
+      base: nginx@latest
+      documentRoot: /var/www/web/dist
+      ports:
+        - port: 80
+          httpSupport: true
+
+  - setup: api
+    build:
+      base: nodejs@20
+      buildCommands:
+        - cd api && npm install
+        - cd api && npm run build
+      deployFiles:
+        - ./api/dist
+        - ./api/node_modules
+        - ./api/package.json
+    run:
+      base: nodejs@20
+      ports:
+        - port: 3000
+          httpSupport: true
+      start: node api/dist/server.js
+      healthCheck:
+        httpGet:
+          port: 3000
+          path: /health
+
+  - setup: worker
+    build:
+      base: python@3.11
+      buildCommands:
+        - cd worker && pip install -r requirements.txt
+      deployFiles:
+        - ./worker
+    run:
+      base: python@3.11
+      os: ubuntu
+      prepareCommands:
+        - sudo apt-get update
+        - sudo apt-get install -y poppler-utils tesseract-ocr pandoc libtesseract-dev
+      start: python worker/main.py
