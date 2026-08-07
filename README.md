@@ -10,3 +10,4 @@ DocuSpace AI is a complete, production-ready document search and AI retrieval (R
 5. **Qdrant (vector)**: High-speed vector similarity database.
 6. **NATS (queue)**: High-performance message queue for asynchronous decoupling.
 7. **S3 Storage (storage)**: S3-compatible file persistence.
+ 
