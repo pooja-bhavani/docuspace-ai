@@ -1,7 +1,4 @@
 # zerops.yaml
-# Multi-Service Build and Deploy pipeline for Nginx Static, Node.js API, and Python Worker.
-# Commit this file as 'zerops.yaml' to the root of your unified GitHub repository.
-
 zerops:
   # =========================================================================
   # 1. FRONTEND: Nginx Static Web Server
@@ -9,8 +6,6 @@ zerops:
   - setup: web
     build:
       base: nodejs@20
-      # Overrides the project-level NODE_ENV=production so that npm install
-      # successfully installs devDependencies (like vite and typescript) for compilation.
       envVariables:
         NODE_ENV: development
       buildCommands:
@@ -20,8 +15,6 @@ zerops:
         - ./web/dist
     run:
       base: nginx@latest
-      # Folder name used as the root of the publicly accessible web server content.
-      # This is relative to /var/www where deployFiles places the './web/dist' folder.
       documentRoot: web/dist
       ports:
         - port: 80
@@ -33,8 +26,6 @@ zerops:
   - setup: api
     build:
       base: nodejs@20
-      # Overrides the project-level NODE_ENV=production so that npm install
-      # successfully installs devDependencies (like typescript) for tsc compilation.
       envVariables:
         NODE_ENV: development
       buildCommands:
@@ -61,7 +52,7 @@ zerops:
   - setup: worker
     build:
       base: python@3.11
-      os: ubuntu      # <-- CRITICAL: Sets the build environment to Ubuntu to pull precompiled wheels
+      os: ubuntu
       buildCommands:
         # Install all dependencies into ./vendor so they travel with the application artifact
         - cd worker && pip install --target=./vendor -r requirements.txt
@@ -70,7 +61,6 @@ zerops:
     run:
       base: python@3.11
       os: ubuntu
-      # Custom runtime image configuration - install pdftotext, tesseract OCR, and pandoc
       prepareCommands:
         - sudo apt-get update
         - sudo apt-get install -y poppler-utils tesseract-ocr pandoc libtesseract-dev
