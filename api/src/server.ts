@@ -4,7 +4,7 @@ import multer from 'multer';
 import { Pool } from 'pg';
 import { connect, JSONCodec } from 'nats';
 import { QdrantClient } from '@qdrant/js-client-rest';
-import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, CreateBucketCommand, HeadBucketCommand } from '@aws-sdk/client-s3';
 import * as fs from 'fs';
 
 const app = express();
@@ -55,6 +55,27 @@ async function initDB() {
   }
 }
 initDB();
+
+// Automatically verify and initialize S3 bucket on startup
+async function initS3() {
+  const bucketName = process.env.S3_BUCKET || 'docuspace-files';
+  try {
+    await s3.send(new HeadBucketCommand({ Bucket: bucketName }));
+    console.log(`✅ S3 Bucket "${bucketName}" verified.`);
+  } catch (err: any) {
+    if (err.name === 'NotFound' || err.$metadata?.httpStatusCode === 404) {
+      try {
+        await s3.send(new CreateBucketCommand({ Bucket: bucketName }));
+        console.log(`✅ S3 Bucket "${bucketName}" automatically initialized.`);
+      } catch (createErr) {
+        console.error(`❌ Failed to create S3 Bucket "${bucketName}":`, createErr);
+      }
+    } else {
+      console.error(`❌ S3 Bucket verification issue:`, err);
+    }
+  }
+}
+initS3();
 
 // Health Check for Zerops readiness
 app.get('/health', (req, res) => {
