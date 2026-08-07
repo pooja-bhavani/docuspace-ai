@@ -1,181 +1,106 @@
-import express from 'express';
-import cors from 'cors';
-import multer from 'multer';
-import { Pool } from 'pg';
-import { connect, JSONCodec } from 'nats';
-import { QdrantClient } from '@qdrant/js-client-rest';
-import { S3Client, PutObjectCommand, CreateBucketCommand, HeadBucketCommand } from '@aws-sdk/client-s3';
-import * as fs from 'fs';
+# zerops.yml
+# Multi-Service Build and Deploy pipeline for Nginx Static, Node.js API, and Python Worker.
+# Commit this file as 'zerops.yml' (with .yml extension) to the root of your unified GitHub repository.
 
-const app = express();
-app.use(cors());
-app.use(express.json());
+zerops:
+  # =========================================================================
+  # 1. FRONTEND: Nginx Static Web Server
+  # =========================================================================
+  - setup: web
+    build:
+      base: nodejs@20
+      # Overrides the project-level NODE_ENV=production so that npm install
+      # successfully installs devDependencies (like vite and typescript) for compilation.
+      envVariables:
+        NODE_ENV: development
+      buildCommands:
+        - cd web && npm install
+        - cd web && npm run build
+      deployFiles:
+        - ./web/dist
+    run:
+      base: nginx@latest
+      # Folder name used as the root of the publicly accessible web server content.
+      # This is relative to /var/www where deployFiles places the './web/dist' folder.
+      documentRoot: web/dist
+      ports:
+        - port: 80
+          httpSupport: true
 
-const upload = multer({ dest: '/tmp/uploads/' });
-const jc = JSONCodec();
+  # =========================================================================
+  # 2. BACKEND: Node.js/TypeScript API
+  # =========================================================================
+  - setup: api
+    build:
+      base: nodejs@20
+      # Overrides the project-level NODE_ENV=production so that npm install
+      # successfully installs devDependencies (like typescript) for tsc compilation.
+      envVariables:
+        NODE_ENV: development
+      buildCommands:
+        - cd api && npm install
+        - cd api && npm run build
+      deployFiles:
+        - ./api/dist
+        - ./api/node_modules
+        - ./api/package.json
+    run:
+      base: nodejs@20
+      ports:
+        - port: 3000
+          httpSupport: true
+      start: cd api && node dist/server.js
+      healthCheck:
+        httpGet:
+          port: 3000
+          path: /health
+      envVariables:
+        PORT: 3000
+        # Secure dynamic Zerops references mapped over the private VXLAN network
+        DB_HOST: ${db_hostname}
+        DB_USER: ${db_user}
+        DB_PASSWORD: ${db_password}
+        DB_NAME: ${db_dbName}
+        QDRANT_URL: http://${vector_hostname}:6333
+        NATS_URL: nats://${queue_hostname}:4222
+        S3_ENDPOINT: http://${storage_hostname}
+        S3_ACCESS_KEY: ${storage_accessKeyId}
+        S3_SECRET_KEY: ${storage_secretAccessKey}
+        S3_BUCKET: docuspace-files
 
-// System environment variable injection
-const pool = new Pool({
-  host: process.env.DB_HOST,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  database: process.env.DB_NAME,
-  port: 5432
-});
-
-const qdrant = new QdrantClient({
-  url: process.env.QDRANT_URL || 'http://vector:6333'
-});
-
-const s3 = new S3Client({
-  endpoint: process.env.S3_ENDPOINT,
-  region: 'us-east-1',
-  credentials: {
-    accessKeyId: process.env.S3_ACCESS_KEY || '',
-    secretAccessKey: process.env.S3_SECRET_KEY || ''
-  },
-  forcePathStyle: true
-});
-
-// Initialize Schema
-async function initDB() {
-  try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS documents (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        name VARCHAR(255) NOT NULL,
-        storage_key VARCHAR(555) NOT NULL,
-        status VARCHAR(50) NOT NULL DEFAULT 'processing',
-        created_at TIMESTAMPTZ DEFAULT NOW()
-      );
-    `);
-    console.log('✅ PostgreSQL schema successfully initialised.');
-  } catch (err) {
-    console.error('❌ Failed to initialise database:', err);
-  }
-}
-initDB();
-
-// Automatically verify and initialize S3 bucket on startup
-async function initS3() {
-  const bucketName = process.env.S3_BUCKET || 'docuspace-files';
-  try {
-    await s3.send(new HeadBucketCommand({ Bucket: bucketName }));
-    console.log(`✅ S3 Bucket "${bucketName}" verified.`);
-  } catch (err: any) {
-    if (err.name === 'NotFound' || err.$metadata?.httpStatusCode === 404) {
-      try {
-        await s3.send(new CreateBucketCommand({ Bucket: bucketName }));
-        console.log(`✅ S3 Bucket "${bucketName}" automatically initialized.`);
-      } catch (createErr) {
-        console.error(`❌ Failed to create S3 Bucket "${bucketName}":`, createErr);
-      }
-    } else {
-      console.error(`❌ S3 Bucket verification issue:`, err);
-    }
-  }
-}
-initS3();
-
-// Health Check for Zerops readiness
-app.get('/health', (req, res) => {
-  res.status(200).json({ status: 'UP' });
-});
-
-// Fetch documents list
-app.get('/api/documents', async (req, res) => {
-  try {
-    const result = await pool.query('SELECT * FROM documents ORDER BY created_at DESC');
-    res.json(result.rows);
-  } catch (err) {
-    res.status(500).json({ error: 'Failed to retrieve documents.' });
-  }
-});
-
-// Handle PDF/DOCX file upload
-app.post('/api/upload', upload.single('file'), async (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ error: 'No file uploaded.' });
-  }
-
-  const { originalname, path } = req.file;
-  const storageKey = `uploads/${Date.now()}-${originalname}`;
-
-  try {
-    // 1. Save file metadata to PG
-    const dbResult = await pool.query(
-      'INSERT INTO documents (name, storage_key, status) VALUES ($1, $2, $3) RETURNING *',
-      [originalname, storageKey, 'processing']
-    );
-    const document = dbResult.rows[0];
-
-    // 2. Upload file binary to S3
-    const fileStream = fs.createReadStream(path);
-    await s3.send(new PutObjectCommand({
-      Bucket: process.env.S3_BUCKET || 'docuspace-files',
-      Key: storageKey,
-      Body: fileStream,
-      ContentType: req.file.mimetype
-    }));
-
-    // 3. Publish extraction task to NATS Queue
-    const natsConn = await connect({ servers: process.env.NATS_URL || 'nats://queue:4222' });
-    natsConn.publish('document.parse', jc.encode({
-      documentId: document.id,
-      storageKey: storageKey,
-      name: originalname
-    }));
-    await natsConn.drain();
-
-    // Cleanup local temp file
-    fs.unlinkSync(path);
-
-    res.status(202).json(document);
-  } catch (err) {
-    console.error('❌ Upload failure:', err);
-    res.status(500).json({ error: 'Upload transaction failed.' });
-  }
-});
-
-// Semantic search and QA endpoint
-app.post('/api/chat', async (req, res) => {
-  const { query, documentId } = req.body;
-  if (!query) return res.status(400).json({ error: 'Query required.' });
-
-  try {
-    // 1. Connect NATS and request query embedding from python worker
-    const natsConn = await connect({ servers: process.env.NATS_URL || 'nats://queue:4222' });
-    const response = await natsConn.request('embeddings.generate', jc.encode({ text: query }), { timeout: 5000 });
-    const { embedding } = jc.decode(response.data) as { embedding: number[] };
-    await natsConn.drain();
-
-    // 2. Perform Cosine Similarity Search in Qdrant
-    const searchResult = await qdrant.search('documents', {
-      vector: embedding,
-      filter: documentId ? {
-        must: [{ key: 'document_id', match: { value: documentId } }]
-      } : undefined,
-      limit: 3,
-      with_payload: true
-    });
-
-    // 3. Compile matched text blocks
-    const contexts = searchResult.map(hit => hit.payload?.text || '').join('\n\n');
-
-    // Send context, hits and a generated synthesis back to frontend
-    res.json({
-      answer: contexts ? `Here is the relevant information extracted from your documents:\n\n${contexts}` : "No matches found in your document database.",
-      sources: searchResult.map(hit => ({
-        text: hit.payload?.text,
-        score: hit.score,
-        documentId: hit.payload?.document_id
-      }))
-    });
-  } catch (err) {
-    console.error('❌ Search failure:', err);
-    res.status(500).json({ error: 'Semantic search failed.' });
-  }
-});
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 API active on port ${PORT}`));
+  # =========================================================================
+  # 3. WORKER: Python NLP & OCR background processor
+  # =========================================================================
+  - setup: worker
+    build:
+      base: python@3.11
+      os: ubuntu      # <-- Sets the build environment to Ubuntu
+      # Copies the requirements file to the runtime prepare phase container
+      addToRunPrepare:
+        - worker/requirements.txt
+      buildCommands:
+        - echo "Preparing worker source code..."
+      deployFiles:
+        - ./worker
+    run:
+      base: python@3.11
+      os: ubuntu
+      # Custom runtime image configuration - install pdftotext, tesseract OCR, pandoc AND Python packages
+      prepareCommands:
+        - sudo apt-get update
+        - sudo apt-get install -y poppler-utils tesseract-ocr pandoc libtesseract-dev
+        # Install Python dependencies directly into the system environment of the custom runtime image
+        - pip install -r worker/requirements.txt
+      start: python worker/main.py
+      envVariables:
+        # Secure dynamic Zerops references mapped over the private VXLAN network
+        DB_HOST: ${db_hostname}
+        DB_USER: ${db_user}
+        DB_PASSWORD: ${db_password}
+        DB_NAME: ${db_dbName}
+        QDRANT_URL: http://${vector_hostname}:6333
+        NATS_URL: nats://${queue_hostname}:4222
+        S3_ENDPOINT: http://${storage_hostname}
+        S3_ACCESS_KEY: ${storage_accessKeyId}
+        S3_SECRET_KEY: ${storage_secretAccessKey}
+        S3_BUCKET: docuspace-files
